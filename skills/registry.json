@@ -1,0 +1,13 @@
+{
+  "version": "1.0.0",
+  "updatedAt": "2026-03-24T20:56:45.245Z",
+  "skills": [
+    {
+      "name": "apex-log-analysis",
+      "description": "Analyze Salesforce Apex debug logs for performance bottlenecks, governor limit risks, and slow methods using the apex-log-mcp server. Use when the user asks to run anonymous Apex, analyze a debug log, investigate performance issues, or check governor limits.",
+      "files": [
+        "SKILL.md"
+      ]
+    }
+  ]
+}
