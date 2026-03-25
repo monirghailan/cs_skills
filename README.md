@@ -22,6 +22,8 @@ Restart Cursor, then ask your AI assistant:
 - *"What skills are available?"*
 - *"Show me the apex-log-analysis skill"*
 - *"Install the apex-log-analysis skill"*
+- *"Are any of my skills out of date?"*
+- *"Update the apex-log-analysis skill"*
 
 ## Tools
 
@@ -30,6 +32,8 @@ Restart Cursor, then ask your AI assistant:
 | `list_skills` | none | List all available skills with names and descriptions |
 | `get_skill` | `skillName` | Preview a skill's full SKILL.md content |
 | `install_skill` | `skillName`, `location` | Install a skill to project (`.cursor/skills/`) or personal (`~/.cursor/skills/`) directory |
+| `check_skill_updates` | `skillName` (optional), `location` | Compare installed skills against the registry and show diffs. Omit `skillName` to check all. |
+| `update_skill` | `skillName`, `location` | Pull the latest version from the registry and update local files |
 
 ## Configuration
 
