@@ -84,6 +84,54 @@ async function fetchSkillFile(skillName: string, fileName: string): Promise<stri
   }
 }
 
+function generateDiff(localContent: string, remoteContent: string): string {
+  const localLines = localContent.split("\n");
+  const remoteLines = remoteContent.split("\n");
+  const diff: string[] = [];
+  const maxLen = Math.max(localLines.length, remoteLines.length);
+
+  for (let i = 0; i < maxLen; i++) {
+    const local = localLines[i];
+    const remote = remoteLines[i];
+
+    if (local === undefined) {
+      diff.push(`+ ${remote}`);
+    } else if (remote === undefined) {
+      diff.push(`- ${local}`);
+    } else if (local !== remote) {
+      diff.push(`- ${local}`);
+      diff.push(`+ ${remote}`);
+    }
+  }
+
+  return diff.length > 0 ? diff.join("\n") : "";
+}
+
+function resolveSkillsDir(location: string): string {
+  return location === "personal"
+    ? path.join(process.env.HOME || "~", ".cursor", "skills")
+    : path.join(process.cwd(), ".cursor", "skills");
+}
+
+async function readLocalSkillFile(skillName: string, fileName: string, location: string): Promise<string | null> {
+  const filePath = path.join(resolveSkillsDir(location), skillName, fileName);
+  try {
+    return await fs.readFile(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+}
+
+async function isSkillInstalled(skillName: string, location: string): Promise<boolean> {
+  const skillDir = path.join(resolveSkillsDir(location), skillName);
+  try {
+    await fs.access(skillDir);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 class CsSkillsServer {
   private server: McpServer;
 
@@ -91,7 +139,7 @@ class CsSkillsServer {
     this.server = new McpServer(
       {
         name: "cs_skills",
-        version: "1.0.0",
+        version: "1.1.0",
         description: "Browse and install Cursor skills from a shared registry.",
       },
       {
@@ -100,7 +148,8 @@ class CsSkillsServer {
           "Use this server to browse available Cursor skills and install them. " +
           "Start with list_skills to see what's available, use get_skill to preview " +
           "a skill's content, and install_skill to download it into the user's " +
-          ".cursor/skills/ directory.",
+          ".cursor/skills/ directory. Use check_skill_updates to compare installed " +
+          "skills against the registry and show diffs, then update_skill to apply updates.",
       },
     );
 
@@ -247,6 +296,184 @@ class CsSkillsServer {
         return {
           content: [{ type: "text", text }],
           isError: errors.length > 0 && installed.length === 0,
+        };
+      },
+    );
+
+    this.server.tool(
+      "check_skill_updates",
+      "Compare locally installed skills against the registry and show what has changed. Checks a single skill or all installed skills.",
+      {
+        skillName: z
+          .string()
+          .optional()
+          .describe("Name of a specific skill to check. If omitted, checks all installed skills."),
+        location: z
+          .enum(["project", "personal"])
+          .default("project")
+          .describe(
+            'Where to look for installed skills: "project" (.cursor/skills/ in cwd) or "personal" (~/.cursor/skills/)'
+          ),
+      },
+      async ({ skillName, location }) => {
+        const registry = await getRegistry();
+        const skillsToCheck = skillName
+          ? registry.skills.filter((s) => s.name === skillName)
+          : registry.skills;
+
+        if (skillName && skillsToCheck.length === 0) {
+          const available = registry.skills.map((s) => s.name).join(", ");
+          return {
+            content: [{
+              type: "text",
+              text: `Skill "${skillName}" not found in registry. Available: ${available}`,
+            }],
+            isError: true,
+          };
+        }
+
+        const results: string[] = [];
+        let updatesAvailable = 0;
+
+        for (const skill of skillsToCheck) {
+          const installed = await isSkillInstalled(skill.name, location);
+
+          if (!installed) {
+            results.push(`**${skill.name}**: Not installed`);
+            continue;
+          }
+
+          const fileDiffs: string[] = [];
+
+          for (const fileName of skill.files) {
+            const localContent = await readLocalSkillFile(skill.name, fileName, location);
+            if (localContent === null) {
+              fileDiffs.push(`\n### ${fileName} — NEW FILE (not present locally)\n`);
+              const remoteContent = await fetchSkillFile(skill.name, fileName);
+              fileDiffs.push("```\n" + remoteContent.slice(0, 500) + (remoteContent.length > 500 ? "\n..." : "") + "\n```");
+              continue;
+            }
+
+            const remoteContent = await fetchSkillFile(skill.name, fileName);
+
+            if (localContent === remoteContent) {
+              continue;
+            }
+
+            const diff = generateDiff(localContent, remoteContent);
+            fileDiffs.push(`\n### ${fileName}\n\`\`\`diff\n${diff}\n\`\`\``);
+          }
+
+          if (fileDiffs.length === 0) {
+            results.push(`**${skill.name}**: Up to date`);
+          } else {
+            updatesAvailable++;
+            results.push(`**${skill.name}**: Updates available${fileDiffs.join("\n")}`);
+          }
+        }
+
+        let text = `# Skill Update Check\n\n`;
+        text += updatesAvailable > 0
+          ? `**${updatesAvailable} skill(s) have updates available.**\n\n`
+          : `**All checked skills are up to date.**\n\n`;
+        text += results.join("\n\n");
+
+        if (updatesAvailable > 0) {
+          text += `\n\nUse **update_skill** to apply updates.`;
+        }
+
+        return {
+          content: [{ type: "text", text }],
+        };
+      },
+    );
+
+    this.server.tool(
+      "update_skill",
+      "Update a locally installed skill with the latest version from the registry.",
+      {
+        skillName: z.string().describe("Name of the skill to update (from check_skill_updates)"),
+        location: z
+          .enum(["project", "personal"])
+          .default("project")
+          .describe(
+            'Where the skill is installed: "project" (.cursor/skills/ in cwd) or "personal" (~/.cursor/skills/)'
+          ),
+      },
+      async ({ skillName, location }) => {
+        const registry = await getRegistry();
+        const skill = registry.skills.find((s) => s.name === skillName);
+
+        if (!skill) {
+          const available = registry.skills.map((s) => s.name).join(", ");
+          return {
+            content: [{
+              type: "text",
+              text: `Skill "${skillName}" not found in registry. Available: ${available}`,
+            }],
+            isError: true,
+          };
+        }
+
+        const installed = await isSkillInstalled(skillName, location);
+        if (!installed) {
+          return {
+            content: [{
+              type: "text",
+              text: `Skill "${skillName}" is not installed at ${location} location. Use install_skill to install it first.`,
+            }],
+            isError: true,
+          };
+        }
+
+        const baseDir = resolveSkillsDir(location);
+        const skillDir = path.join(baseDir, skillName);
+        const updated: string[] = [];
+        const unchanged: string[] = [];
+        const errors: string[] = [];
+
+        for (const fileName of skill.files) {
+          try {
+            const remoteContent = await fetchSkillFile(skillName, fileName);
+            const localContent = await readLocalSkillFile(skillName, fileName, location);
+
+            if (localContent === remoteContent) {
+              unchanged.push(fileName);
+              continue;
+            }
+
+            const filePath = path.join(skillDir, fileName);
+            const fileDir = path.dirname(filePath);
+            await fs.mkdir(fileDir, { recursive: true });
+            await fs.writeFile(filePath, remoteContent, "utf-8");
+            updated.push(fileName);
+          } catch (err) {
+            errors.push(`${fileName}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+
+        let text = `# Updated: ${skillName}\n\n`;
+        text += `**Location:** ${skillDir}\n\n`;
+
+        if (updated.length > 0) {
+          text += `**Files updated:**\n${updated.map((f) => `- ${f}`).join("\n")}\n\n`;
+        }
+
+        if (unchanged.length > 0) {
+          text += `**Already up to date:**\n${unchanged.map((f) => `- ${f}`).join("\n")}\n\n`;
+        }
+
+        if (errors.length > 0) {
+          text += `**Errors:**\n${errors.map((e) => `- ${e}`).join("\n")}\n\n`;
+        }
+
+        text += updated.length > 0
+          ? "Skill has been updated. Changes will be picked up by Cursor automatically."
+          : "No files needed updating — skill is already at the latest version.";
+
+        return {
+          content: [{ type: "text", text }],
+          isError: errors.length > 0 && updated.length === 0,
         };
       },
     );

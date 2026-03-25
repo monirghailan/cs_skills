@@ -1,6 +1,6 @@
 {
   "name": "cs_skills",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "MCP server for browsing and installing Cursor skills from a shared registry.",
   "type": "module",
   "main": "dist/index.js",
